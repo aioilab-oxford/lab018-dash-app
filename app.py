@@ -80,7 +80,8 @@ fig = px.line_polar(
 
 # Initialize the Dash app
 external_stylesheets = ["https://codepen.io/chriddyp/pen/bWLwgP.css"]
-app = Dash(external_stylesheets=external_stylesheets)
+app = Dash(__name__, external_stylesheets=external_stylesheets)
+server = app.server
 # Create the layout for Dash
 app.layout = html.Div(
     children=[
