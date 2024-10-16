@@ -50,7 +50,7 @@ def plot_signal_on_geography(
     """
     if not geography:
         with open(
-            PROJECT_ROOT / "demoland-web/areas/tyne_and_wear/geography.json"
+            PROJECT_ROOT / "outputs/geography.json"
         ) as f:
             geo_data = json.load(f)
         geography = gpd.GeoDataFrame.from_features(geo_data["features"]).set_index(
@@ -250,4 +250,4 @@ def update_plots(sort_by, rank, configuration_type, clickData, selected_store):
 
 # Run the Dash app
 if __name__ == "__main__":
-    app.run_server(debug=False)
+    app.run(debug=False)
