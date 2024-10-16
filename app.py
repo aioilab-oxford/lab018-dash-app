@@ -1,4 +1,4 @@
-import sys
+import os
 from pathlib import Path
 
 import json
@@ -250,4 +250,4 @@ def update_plots(sort_by, rank, configuration_type, clickData, selected_store):
 
 # Run the Dash app
 if __name__ == "__main__":
-    app.run(debug=False)
+    app.run(debug=False, port=os.environ.get("PORT", 8050))
