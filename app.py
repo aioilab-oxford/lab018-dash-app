@@ -32,9 +32,11 @@ indicator_columns = [
     "greenspace_accessibility",
 ]
 pareto_evals = pd.DataFrame([p[indicator_columns].mean() for p in pareto_set])
+pareto_evals[:] = MinMaxScaler().fit_transform(pareto_evals)
 pareto_evals.loc[:, "hypervolume"] = (
     (pareto_evals**2).sum(axis="columns").apply(np.sqrt)
 )
+pareto_evals = pareto_evals.head(10)
 pareto_evals[:] = MinMaxScaler().fit_transform(pareto_evals)
 
 
@@ -85,62 +87,96 @@ server = app.server
 # Create the layout for Dash
 app.layout = html.Div(
     children=[
-        html.H1(children="Pareto Set Explorer"),
+        html.H1(children="Trade-Off Explorer"),
+        html.Div(children="The Demoland simulator divides Newcastle into 3795 zones (based on the UK Census 'Output Areas')."),
         html.Div(
             className="row",
             children=[
                 html.Div(
                     className="six columns",
                     children=[
-                        "To select a configuration, please choose a sorting criterion, and then a rank for that criterion."
-                    ],
+                        html.Div(children="An urban configuration (or urban plan) sets, for each zone:"),
+                        html.Div(children=html.Ul([
+                            html.Li("Spatial signature (degree of urbanity) (0 - 15)."),
+                            html.Li("Use (Residential vs Commerical) (-1 - 1)."),
+                            html.Li("Greenspace (Area of zone that is greenspace) (0 - 1)."),
+                            html.Li("Job types (Manual labour vs office work) (0 - 1).")
+                        ]))
+                    ]
                 ),
                 html.Div(
                     className="six columns",
-                    children=["Select configuration parameter to display on the map:"],
+                    children=[
+                        html.Div(children="Demoland then predicts urban quality indicators, for each zone:"),
+                        html.Div(children=html.Ul([
+                            html.Li("Air quality."),
+                            html.Li("House affordability."),
+                            html.Li("Job accessibility."),
+                            html.Li("Greenspace accessibility.")
+                        ]))
+                    ]
+                ),
+            ]
+        ),
+        html.H2(children="The Best Urban Plans Found"),
+        html.Div(children="These plots show different views of the same points. Each point represents an urban configuration or plan. Each plot shows the plans' peformance on a pair of indicators (averaged over the zones). (Hypervolume tries to combine all the indicators into one.) The red cross shows the plan being visualised below. Blue crosses show the previously visualised plans."),
+        html.Div(children=[dcc.Graph(figure={}, id="scatter-matrix", style={"height": "75vh"})]),
+        html.H2(children="Visualisation of a Specific Urban Plan"),
+        html.Div(children="A visualisation of the urban plan corresponding to the red cross in the plots above. The map shows the plan, the spider plot shows the plan's predicted urban quality indicators (averaged over the zones). The histograms show the distribution of indicator values over the zones."),
+        html.Div(
+            className="row",
+            children=[
+                html.Div(
+                    className="six columns",
+                    children=["Select an aspect of the urban configuration/plan to display on the map:"],
                 ),
             ],
         ),
         html.Div(
             className="row",
             children=[
-                html.Div(className="six columns", children=[dcc.Dropdown(
-                    id="sort_by",
-                    options=["hypervolume"] + indicator_columns,
-                    value="hypervolume",
-                )]),
-                html.Div(className="six columns", children=[dcc.Dropdown(
+                html.Div(className="six columns", children=[dcc.RadioItems(
                     id="configuration_type",
                     options=configuration_columns,
                     value="signature_type",
-                )])
+                )]),
+                # html.Div(className="six columns", children=[dcc.RadioItems(
+                #     id="sort_by",
+                #     options=["hypervolume"] + indicator_columns,
+                #     value="hypervolume",
+                # )]),
             ],
         ),
+        # html.Div(
+        #     className="row",
+        #     children=[
+        #         html.Div(
+        #             className="six columns",
+        #             children=[
+        #                 ""
+        #             ],
+        #         ),
+        #         html.Div(
+        #             className="six columns",
+        #             children=[
+        #                 dcc.Slider(0, len(pareto_set) - 1, 1, value=0, id="rank")
+        #             ],
+        #         ),
+        #     ],
+        # ),
         html.Div(
             className="row",
             children=[
-                html.Div(
-                    className="six columns",
-                    children=[
-                        dcc.Slider(0, len(pareto_set) - 1, 1, value=0, id="rank")
-                    ],
-                ),
-            ],
-        ),
-        html.Div(
-            className="row",
-            children=[
-                html.Div(
-                    className="six columns", children=[dcc.Graph(figure={}, id="radar")]
-                ),
                 html.Div(
                     className="six columns",
                     children=[dcc.Graph(figure={}, id="configuration")],
                 ),
+                html.Div(
+                    className="six columns", children=[dcc.Graph(figure={}, id="radar")]
+                ),
             ],
         ),
         html.Div(className="row", children=[dcc.Graph(figure={}, id="indicators")]),
-        html.Div(children=[dcc.Graph(figure={}, id="scatter-matrix", style={"height": "75vh"})]),
         # Add dcc.Store component to store the 'selected' value
         dcc.Store(id='selected-store', data=0),
     ]
@@ -153,13 +189,14 @@ app.layout = html.Div(
     Output("indicators", "figure"),
     Output("scatter-matrix", "figure"),
     Output('selected-store', 'data'),  # Output to store 'selected' value
-    Input("sort_by", "value"),
-    Input("rank", "value"),
+    # Input("sort_by", "value"),
+    # Input("rank", "value"),
     Input("configuration_type", "value"),
     Input("scatter-matrix", "clickData"),
     State('selected-store', 'data')  # State to get the stored 'selected' value
 )
-def update_plots(sort_by, rank, configuration_type, clickData, selected_store):
+# def update_plots(sort_by, rank, configuration_type, clickData, selected_store):
+def update_plots(configuration_type, clickData, selected_store):
     ctx = callback_context
     if not ctx.triggered:
         triggered_input = "No input triggered yet"
@@ -167,8 +204,9 @@ def update_plots(sort_by, rank, configuration_type, clickData, selected_store):
         triggered_input = ctx.triggered[0]['prop_id'].split('.')[0]
         
     if triggered_input == "sort_by" or triggered_input == "rank" or triggered_input == "No input triggered yet":
-        sorting = pareto_evals.sort_values(sort_by, ascending=False).index
-        selected = sorting[rank]
+        # sorting = pareto_evals.sort_values(sort_by, ascending=False).index
+        # selected = sorting[rank]
+        selected = 0
     elif triggered_input == "scatter-matrix":
         clicked_values = [
             clickData["points"][0]['dimensions[0].values'],
@@ -220,7 +258,7 @@ def update_plots(sort_by, rank, configuration_type, clickData, selected_store):
     )
     for i, ic in enumerate(indicator_columns):
         figs[-1].add_trace(
-            go.Histogram(x=pareto_set[selected][ic].to_numpy(), histnorm="probability"),
+            go.Histogram(x=pareto_set[selected][ic].to_numpy()),#, histnorm="probability"),
             row=1,
             col=i + 1,
         )
