@@ -12,6 +12,8 @@ from dash import Dash, Input, Output, callback, dcc, html, callback_context, Sta
 from dash.dependencies import Input, Output
 from plotly.subplots import make_subplots
 from sklearn.preprocessing import MinMaxScaler
+from scipy.special import softmax
+from scipy.spatial.distance import cosine
 
 
 PROJECT_ROOT = Path(__file__).parent
@@ -36,14 +38,71 @@ for i in output_dir.iterdir():
 # current = pd.DataFrame([[15.501794, -7.411663, 3505.254282, 480699.676225]], columns=indicator_columns)
 pareto_evals = pd.DataFrame([p[indicator_columns].mean() for p in pareto_set])
 # pareto_evals = pd.concat([current, pareto_evals], ignore_index=True)
-pareto_evals[:] = MinMaxScaler().fit_transform(pareto_evals)
-pareto_evals.loc[:, "Unified Score"] = (
-    (pareto_evals**2).sum(axis="columns").apply(np.sqrt)
-)
+scaler = MinMaxScaler()
+pareto_evals[:] = scaler.fit_transform(pareto_evals)
+hypervolume = pareto_evals.prod(axis="columns")
+pareto_evals.loc[:, "Unified Score"] = hypervolume / hypervolume.max()
 pareto_evals = pareto_evals[pareto_evals.columns[-1:].to_list() + pareto_evals.columns[:-1].to_list()]
+for c in pareto_set:
+    c.loc[:, indicator_columns] = scaler.transform(c.loc[:, indicator_columns])
 # pareto_evals = pareto_evals.head(10)
-pareto_evals[:] = MinMaxScaler().fit_transform(pareto_evals)
+    
+colours = [
+    "#5FB6E3",
+    "#655C56",
+    "#C5B6A8",
+    "#D6534C",
+    "#396CAF",
+    "#D8A2FF",
+    "#743F9A",
+    "#51A220",
+    "#ECA98A",
+    "#CEC11F"
+]
+colour_names = [
+    "Cyan",
+    "Grey",
+    "Beige",
+    "Red",
+    "Blue",
+    "Pink",
+    "Purple",
+    "Green",
+    "Orange",
+    "Yellow"
+]
+    
 
+def get_options_from_preferences(preferences, pareto_evals, num_options=10):
+    distances = pareto_evals.loc[:, indicator_columns].apply(lambda row: cosine(preferences, row), axis=1)
+    return distances.argsort().to_numpy()[:num_options]
+
+
+def plot_options(pareto_evals):
+    rows = 2
+    cols = 5
+    fig = make_subplots(rows=rows, cols=cols, specs=[[{"type": "polar"} for _ in range(cols)] for _ in range(rows)])
+    for i, (_, c) in enumerate(pareto_evals.iterrows()):
+        fig.add_trace(
+            go.Scatterpolar(r=c.to_numpy()[1:], theta=["AP", "HA", "JA", "GA"], mode="lines", line=dict(color=colours[i]), fill="toself"),
+            row=i // cols + 1,
+            col=i % cols + 1
+        )
+    fig.update_polars(
+        # angularaxis_showticklabels=False,
+        radialaxis_showticklabels=False,
+        radialaxis_range=[0, 1]
+    )
+    fig.update_layout(polar=dict(radialaxis=dict(range=[0, 1])), showlegend=False)
+    return fig
+
+
+colour_text = {
+    "Urban Density": ([1, 12], ["Rural", "Urban"]),
+    "Land Use": ([-1, 1], ["More Residential", "More Commercial"]),
+    "Public Greenspace": ([0, 1], ["Less Greenspace", "More Greenspace"]),
+    "Job Mix": ([0, 1], ["Blue Collar", "White Collar"])
+}
 def plot_signal_on_geography(
     signal: pd.Series, geography: gpd.GeoDataFrame = None
 ) -> plotly.basedatatypes.BaseTraceType:
@@ -67,22 +126,15 @@ def plot_signal_on_geography(
         geojson=json.loads(gdf["geometry"].to_json()),
         locations=gdf.index,
         z=gdf[signal.name],
-        coloraxis="coloraxis",
+        # coloraxis="coloraxis",
         marker=dict(line=dict(color="rgba(0,0,0,0)")),
-        # colorbar=dict(
-        # tickvals=np.arange(-4, 4.5, 0.5),  # Keep the detailed tickvals
+        colorbar=dict(
+            tickmode="array",
+            tickvals=colour_text[signal.name][0],
+            ticktext=colour_text[signal.name][1],
+        )
     )
 
-
-fig = px.scatter_matrix(pareto_evals)
-fig.update_traces(showupperhalf=False)
-# fig.show()
-# fig.write_html(tmp_dir / "pareto_scatter_matrix.html")
-
-fig = px.line_polar(
-    pareto_evals.iloc[:1].T.reset_index(), r=0, theta="index", line_close=True
-)
-# fig.write_html(tmp_dir / "pareto_line_polar.html")
 
 # Initialize the Dash app
 external_stylesheets = ["https://codepen.io/chriddyp/pen/bWLwgP.css"]
@@ -92,162 +144,127 @@ server = app.server
 app.layout = html.Div(
     children=[
         html.H1(children="Trade-off Explorer"),
-        html.Div(children="The Demoland simulator divides Newcastle into 3795 zones (based on the UK Census 'Output Areas')."),
+        html.Div(children="The Demoland simulator divides Newcastle into 3795 zones (based on the UK Census 'Output Areas'). A scenario is specified by setting a value for Urban Density, Land Use, Public Greenspace, and Job Mix for each zone. Demoland then predicts, for each zone, urban quality indicators - Air Purity, House Affordability, Greenspace Accessibility and Job Accessibility. Our optimisation alorithm finds the set of scenarios that achieve the best trade-offs between the indicators, called the Pareto set. This tool explores the set found by our algorithm."),
         html.Div(
             className="row",
             children=[
                 html.Div(
                     className="six columns",
                     children=[
-                        html.Div(children="An urban configuration (or urban plan) sets, for each zone:"),
-                        html.Div(children=html.Ul([
-                            html.Li("Spatial signature (degree of urbanity) (0 - 15)."),
-                            html.Li("Use (Residential vs Commerical) (-1 - 1)."),
-                            html.Li("Greenspace (Area of zone that is greenspace) (0 - 1)."),
-                            html.Li("Job types (Manual labour vs office work) (0 - 1).")
-                        ]))
+                        html.H3(children="Indicate your preferences"),
+                        html.Div(children="Drag the sliders to indicate how important each urban quality indicator is to your plan."),
+                        html.B(children=["Air Purity", dcc.Slider(0, 1, value=0.5, id="air_quality")]),
+                        html.B(children=["House Affordability", dcc.Slider(0, 1, value=0.5, id="house_affordability")]),
+                        html.B(children=["Job Accessibility", dcc.Slider(0, 1, value=0.5, id="job_accessibility")]),
+                        html.B(children=["Greenspace Accessibility", dcc.Slider(0, 1, value=0.5, id="greenspace_accessibility")]),
+                        # html.Div("."),
+                        html.Div(children=["The spiderplots on the right show the scenarios that most closely match your preferences. Use the dropdown menu to choose the colour of the scenario you would like to explore further. This is the scenario that will be shown in the Scenario Explorer below.", dcc.Dropdown(colour_names, "Cyan", id="colour")]),
                     ]
                 ),
                 html.Div(
                     className="six columns",
                     children=[
-                        html.Div(children="Demoland then predicts urban quality indicators, for each zone:"),
-                        html.Div(children=html.Ul([
-                            html.Li("Air quality."),
-                            html.Li("House affordability."),
-                            html.Li("Job accessibility."),
-                            html.Li("Greenspace accessibility.")
-                        ]))
+                        html.H3(children="Browse your options"),
+                        html.Div(children="These spiderplots represent the scenarios in the Pareto set that best match your preferences."),
+                        html.Div(children=dcc.Graph(figure={}, id="radar-options"))
                     ]
                 ),
             ]
         ),
         html.H2(children="Scenario Explorer"),
-        html.Div(children="A visualisation of the urban plan corresponding to the red cross in the plots above. The map shows the plan, the spider plot shows the plan's predicted urban quality indicators (averaged over the zones). The histograms show the distribution of indicator values over the zones."),
         html.Div(
             className="row",
             children=[
                 html.Div(
                     className="six columns",
-                    children=["Select an aspect of the urban configuration/plan to display on the map:"],
+                    children=[
+                        html.H3(children="Scenario Map"),
+                        html.Div(children=[
+                            "The Scenario Map makes it easy to see your city's story come to life by showing how different aspects of an urban plan come together. Choose an aspect to see it mapped out, helping you understand patterns and distributions at a glance. Use this to explore urban density, land use, greenspace, and job composition, making complex data easy to grasp.",
+                            html.Ul([
+                                html.Li("Urban Density: represents the degree of urbanity, showing a spectrum from mostly rural to highly urban areas."),
+                                html.Li("Land Use: measures the ratio of commercial to residential space, indicating deviations from the baseline distribution."),
+                                html.Li("Public Greenspace: displays the percentage of publicly accessible greenspace, ranging from minimal to full-area coverage."),
+                                html.Li("Job Mix: illustrates the balance between office (white-collar) and manual (blue-collar) jobs in the area.")
+                            ])
+                        ]),
+                        html.Div(children=
+                            ["Press a button to update the map: "]
+                            + [html.Button(i, id=i, n_clicks=0) for i in configuration_columns]
+                        ),
+                        html.Div(children=dcc.Graph(figure={}, id="configuration")),
+                    ]
                 ),
-            ],
-        ),
-        html.Div(
-            className="row",
-            children=[
-                html.Div(className="six columns", children=[dcc.RadioItems(
-                    id="configuration_type",
-                    options=configuration_columns,
-                    value="Urban Density",
-                )]),
-                # html.Div(className="six columns", children=[dcc.RadioItems(
-                #     id="sort_by",
-                #     options=["hypervolume"] + indicator_columns,
-                #     value="hypervolume",
-                # )]),
-            ],
-        ),
-        # html.Div(
-        #     className="row",
-        #     children=[
-        #         html.Div(
-        #             className="six columns",
-        #             children=[
-        #                 ""
-        #             ],
-        #         ),
-        #         html.Div(
-        #             className="six columns",
-        #             children=[
-        #                 dcc.Slider(0, len(pareto_set) - 1, 1, value=0, id="rank")
-        #             ],
-        #         ),
-        #     ],
-        # ),
-        html.Div(
-            className="row",
-            children=[
                 html.Div(
                     className="six columns",
-                    children=[dcc.Graph(figure={}, id="configuration")],
+                    children=[
+                        html.H3(children="Average Values"),
+                        html.Div(children=[
+                            "The spider plot shows the scenario's predicted urban quality indicators (averaged over the zones). A value of 1 indicates the best performance, 0 the worst.",
+                            html.Ul([
+                                html.Li("Air Purity: summarizes pollution levels based on WHO guidelines, combining five key pollutants into a weighted score. Higher values indicate cleaner air."),
+                                html.Li("House Affordability: reflects the average cost of housing per square metre across different zones. Higher values indicate more affordable housing."),
+                                html.Li("Greenspace Accessibility: assesses the availability of parks that can be reached within a 15-minute drive from any location in the zone. Higher values indicate more accessible greenspace."),
+                                html.Li("Job Accessibility: measures how many jobs are accessible within a 15-minute drive from any point in a given zone. Higher values indicate better job accessibility (and therefore lower commute times).")
+                            ])
+                        ]),
+                        html.Div(children=dcc.Graph(figure={}, id="radar"))
+                    ]
                 ),
-                html.Div(
-                    className="six columns", children=[dcc.Graph(figure={}, id="radar")]
-                ),
-            ],
+            ]
         ),
-        html.Div(className="row", children=[dcc.Graph(figure={}, id="indicators")]),
-        # Add dcc.Store component to store the 'selected' value
+        html.H3(children="Distributions"),
+        html.Div(children="The histograms show the distribution of indicator values over the city's zones for this scenario."),
+        html.Div(children=dcc.Graph(figure={}, id="indicators")),
+        # Add dcc.Store component to store the 'selected' value``
         dcc.Store(id='selected-store', data=0),
         html.H3(children="Performance: Indicator vs Indicator"),
-        html.Div(children="These plots show different views of the same points. Each point represents an urban configuration or plan. Each plot shows the plans' peformance on a pair of indicators (averaged over the zones). (Hypervolume tries to combine all the indicators into one.) The red cross shows the plan being visualised below. Blue crosses show the previously visualised plans."),
+        html.Div(children="These plots show how the indicator values of your chosen scenario compare to the indicator values of the other options. The point highlighted with the larger circle is your chosen scenario."),
         html.Div(children=[dcc.Graph(figure={}, id="scatter-matrix", style={"height": "75vh"})]),
     ]
 )
 
 
 @callback(
+    Output("radar-options", "figure"),
     Output("radar", "figure"),
     Output("configuration", "figure"),
     Output("indicators", "figure"),
     Output("scatter-matrix", "figure"),
     Output('selected-store', 'data'),  # Output to store 'selected' value
-    # Input("sort_by", "value"),
-    # Input("rank", "value"),
-    Input("configuration_type", "value"),
-    Input("scatter-matrix", "clickData"),
-    State('selected-store', 'data')  # State to get the stored 'selected' value
+    Input("air_quality", "value"),
+    Input("house_affordability", "value"),
+    Input("job_accessibility", "value"),
+    Input("greenspace_accessibility", "value"),
+    Input("colour", "value"),
+    Input("Urban Density", "n_clicks"),
+    Input("Land Use", "n_clicks"),
+    Input("Public Greenspace", "n_clicks"),
+    Input("Job Mix", "n_clicks"),
 )
 # def update_plots(sort_by, rank, configuration_type, clickData, selected_store):
-def update_plots(configuration_type, clickData, selected_store):
+def update_plots(air_quality, house_affordability, job_accessibility, greenspace_accessibility, colour, signature_type, use, greenspace, job_types):
     ctx = callback_context
-    if not ctx.triggered:
-        triggered_input = "No input triggered yet"
-    else:
-        triggered_input = ctx.triggered[0]['prop_id'].split('.')[0]
-        
-    if triggered_input == "sort_by" or triggered_input == "rank" or triggered_input == "No input triggered yet":
-        # sorting = pareto_evals.sort_values(sort_by, ascending=False).index
-        # selected = sorting[rank]
-        selected = 0
-    elif triggered_input == "scatter-matrix":
-        clicked_values = [
-            clickData["points"][0]['dimensions[0].values'],
-            clickData["points"][0]['dimensions[1].values'],
-            clickData["points"][0]['dimensions[2].values'],
-            clickData["points"][0]['dimensions[3].values'],
-            clickData["points"][0]['dimensions[4].values']
-        ]
+    configuration_type = "Urban Density" 
+    for c in configuration_columns:
+        if ctx.triggered_id == c:
+            configuration_type = c
 
-        # columns = ['air_quality', 'house_affordability', 'job_accessibility', 'greenspace_accessibility', 'hypervolume']
-        columns = ["Unified Score"] + indicator_columns
-
-        distances = np.sqrt(
-            (pareto_evals[columns[0]] - clicked_values[0]) ** 2 +
-            (pareto_evals[columns[1]] - clicked_values[1]) ** 2 +
-            (pareto_evals[columns[2]] - clicked_values[2]) ** 2 +
-            (pareto_evals[columns[3]] - clicked_values[3]) ** 2 +
-            (pareto_evals[columns[4]] - clicked_values[4]) ** 2
-        )
-
-        selected = distances.idxmin()
-    elif triggered_input == "configuration_type":
-        selected = selected_store  # Keep the previous 'selected' value
-    else:
-        selected = selected_store  # Default to previous 'selected' value for any other input
+    option_idx = colour_names.index(colour)
 
     figs = []
 
-    figs.append(
-        px.line_polar(
-            pareto_evals.loc[selected].T.reset_index(),
-            r=selected,
-            theta="index",
-            line_close=True,
-        )
+    options = get_options_from_preferences(
+        softmax([air_quality, house_affordability, job_accessibility, greenspace_accessibility]),
+        pareto_evals
     )
-    figs[-1].update_traces(fill="toself")
+    figs.append(plot_options(pareto_evals.loc[options]))
+    selected = options[option_idx]
+
+    figs.append(
+        go.Figure(data=go.Scatterpolar(r=pareto_evals.loc[selected].to_numpy()[1:], theta=indicator_columns, mode="lines", line=dict(color=colours[option_idx]), fill="toself"))
+    )
+    figs[-1].update_layout(polar=dict(radialaxis=dict(range=[0, 1])), showlegend=False)
 
     trace = plot_signal_on_geography(pareto_set[selected][configuration_type])
     figs.append(go.Figure(data=trace))
@@ -267,26 +284,43 @@ def update_plots(configuration_type, clickData, selected_store):
             row=1,
             col=i + 1,
         )
+    figs[-1].update_xaxes(showticklabels=False)
+    figs[-1].update_yaxes(showticklabels=False)
     figs[-1].update_layout(showlegend=False)
     
-    fig0 = go.Figure()
-    for i in range(pareto_evals.shape[0]):
-        fig1 = px.scatter_matrix(pareto_evals.loc[[i]])
-    
-        if i == selected:
-            mysymbol = 'x'
-            mycolor = 'red'
-        else:
-            mysymbol = 'circle'
-            mycolor = 'blue'
-
-        fig1.update_traces(marker=dict(size=8, color=mycolor, symbol=mysymbol, opacity=0.7))
-
-        for trace in fig1.data:
-            fig0.add_trace(trace)
-
-    figs.append(fig0)
-    figs[-1].update_traces(diagonal_visible=False, showupperhalf=True)
+    fig = go.Figure()
+    df = pareto_evals.loc[options, indicator_columns]
+    for i, (_, c) in enumerate(df.iterrows()):
+        if i == option_idx:
+            fig.add_trace(
+                go.Splom(
+                    dimensions=[
+                        dict(label=col_name, values=[c.loc[col_name]]) for col_name in indicator_columns
+                    ],
+                    marker=dict(size=20, color="#3490FF", opacity=0.2, showscale=False)
+                )
+            )
+        fig.add_trace(
+            go.Splom(
+                dimensions=[
+                    dict(label=col_name, values=[c.loc[col_name]]) for col_name in indicator_columns
+                ],
+                marker=dict(size=8, color=colours[i], showscale=False)
+            )
+        )
+    # df = pareto_evals.drop(options)
+    # fig.add_trace(
+    #     go.Splom(
+    #         dimensions=[
+    #             dict(label=col_name, values=df[col_name]) for col_name in indicator_columns
+    #         ],
+    #         marker=dict(size=4, color="blue", showscale=False)
+    #     )
+    # )
+    fig.update_layout({"xaxis"+str(i+1): dict(range = [0, 1]) for i in range(7)})
+    fig.update_layout({"yaxis"+str(i+1): dict(range = [0, 1]) for i in range(7)})
+    fig.update_traces(diagonal_visible=False, showlegend=False)
+    figs.append(fig)
     
     # Return the figures and update the 'selected' value in the store
     return tuple(figs) + (selected,)
