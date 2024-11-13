@@ -15,30 +15,34 @@ from sklearn.preprocessing import MinMaxScaler
 
 
 PROJECT_ROOT = Path(__file__).parent
-experiment = 202409182205  # directory where results are logged
+experiment = 202411071548
 # tmp_dir = PROJECT_ROOT / "outputs/tmp"
 # tmp_dir.mkdir(parents=True, exist_ok=True)
 
 
 output_dir = PROJECT_ROOT / "outputs" / str(experiment) / "pareto_set"
+configuration_columns = ["Urban Density", "Land Use", "Public Greenspace", "Job Mix"]
+indicator_columns = [
+    "Air Purity",
+    "House Affordability",
+    "Job Accessibility",
+    "Greenspace Accessibility",
+]
 pareto_set = []
 for i in output_dir.iterdir():
-    pareto_set.append(pd.read_csv(i, index_col="geo_code"))
-configuration_columns = ["signature_type", "use", "greenspace", "job_types"]
-indicator_columns = [
-    "air_quality",
-    "house_affordability",
-    "job_accessibility",
-    "greenspace_accessibility",
-]
+    configuration = pd.read_csv(i, index_col="geo_code")
+    configuration.columns = configuration_columns + indicator_columns
+    pareto_set.append(configuration)
+# current = pd.DataFrame([[15.501794, -7.411663, 3505.254282, 480699.676225]], columns=indicator_columns)
 pareto_evals = pd.DataFrame([p[indicator_columns].mean() for p in pareto_set])
+# pareto_evals = pd.concat([current, pareto_evals], ignore_index=True)
 pareto_evals[:] = MinMaxScaler().fit_transform(pareto_evals)
-pareto_evals.loc[:, "hypervolume"] = (
+pareto_evals.loc[:, "Unified Score"] = (
     (pareto_evals**2).sum(axis="columns").apply(np.sqrt)
 )
-pareto_evals = pareto_evals.head(10)
+pareto_evals = pareto_evals[pareto_evals.columns[-1:].to_list() + pareto_evals.columns[:-1].to_list()]
+# pareto_evals = pareto_evals.head(10)
 pareto_evals[:] = MinMaxScaler().fit_transform(pareto_evals)
-
 
 def plot_signal_on_geography(
     signal: pd.Series, geography: gpd.GeoDataFrame = None
@@ -87,7 +91,7 @@ server = app.server
 # Create the layout for Dash
 app.layout = html.Div(
     children=[
-        html.H1(children="Trade-Off Explorer"),
+        html.H1(children="Trade-off Explorer"),
         html.Div(children="The Demoland simulator divides Newcastle into 3795 zones (based on the UK Census 'Output Areas')."),
         html.Div(
             className="row",
@@ -118,10 +122,7 @@ app.layout = html.Div(
                 ),
             ]
         ),
-        html.H2(children="The Best Urban Plans Found"),
-        html.Div(children="These plots show different views of the same points. Each point represents an urban configuration or plan. Each plot shows the plans' peformance on a pair of indicators (averaged over the zones). (Hypervolume tries to combine all the indicators into one.) The red cross shows the plan being visualised below. Blue crosses show the previously visualised plans."),
-        html.Div(children=[dcc.Graph(figure={}, id="scatter-matrix", style={"height": "75vh"})]),
-        html.H2(children="Visualisation of a Specific Urban Plan"),
+        html.H2(children="Scenario Explorer"),
         html.Div(children="A visualisation of the urban plan corresponding to the red cross in the plots above. The map shows the plan, the spider plot shows the plan's predicted urban quality indicators (averaged over the zones). The histograms show the distribution of indicator values over the zones."),
         html.Div(
             className="row",
@@ -138,7 +139,7 @@ app.layout = html.Div(
                 html.Div(className="six columns", children=[dcc.RadioItems(
                     id="configuration_type",
                     options=configuration_columns,
-                    value="signature_type",
+                    value="Urban Density",
                 )]),
                 # html.Div(className="six columns", children=[dcc.RadioItems(
                 #     id="sort_by",
@@ -179,6 +180,9 @@ app.layout = html.Div(
         html.Div(className="row", children=[dcc.Graph(figure={}, id="indicators")]),
         # Add dcc.Store component to store the 'selected' value
         dcc.Store(id='selected-store', data=0),
+        html.H3(children="Performance: Indicator vs Indicator"),
+        html.Div(children="These plots show different views of the same points. Each point represents an urban configuration or plan. Each plot shows the plans' peformance on a pair of indicators (averaged over the zones). (Hypervolume tries to combine all the indicators into one.) The red cross shows the plan being visualised below. Blue crosses show the previously visualised plans."),
+        html.Div(children=[dcc.Graph(figure={}, id="scatter-matrix", style={"height": "75vh"})]),
     ]
 )
 
@@ -216,7 +220,8 @@ def update_plots(configuration_type, clickData, selected_store):
             clickData["points"][0]['dimensions[4].values']
         ]
 
-        columns = ['air_quality', 'house_affordability', 'job_accessibility', 'greenspace_accessibility', 'hypervolume']
+        # columns = ['air_quality', 'house_affordability', 'job_accessibility', 'greenspace_accessibility', 'hypervolume']
+        columns = ["Unified Score"] + indicator_columns
 
         distances = np.sqrt(
             (pareto_evals[columns[0]] - clicked_values[0]) ** 2 +
@@ -281,7 +286,7 @@ def update_plots(configuration_type, clickData, selected_store):
             fig0.add_trace(trace)
 
     figs.append(fig0)
-    figs[-1].update_traces(showupperhalf=False)
+    figs[-1].update_traces(diagonal_visible=False, showupperhalf=True)
     
     # Return the figures and update the 'selected' value in the store
     return tuple(figs) + (selected,)
